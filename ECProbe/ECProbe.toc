@@ -1,0 +1,5 @@
+## Interface: 11200
+## Title: ECProbe
+## Notes: Cherche des fonctions/variables globales par mot-cle (/ecprobe mot)
+## SavedVariables: ECProbeDB
+ECProbe.lua
