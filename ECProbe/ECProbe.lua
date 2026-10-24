@@ -145,7 +145,8 @@ SlashCmdList["ECDUMP"] = function(msg)
   Show("dump_" .. name, out)
 end
 
--- /ecframe nom : decrit un cadre (taille, parent, ancres, enfants, regions)
+-- /ecframe nom : decrit un cadre (taille, parent, ancres, enfants, regions,
+-- textures, polices, scripts, champs Lua)
 local function NameOf(o)
   if type(o) == "table" and o.GetName then
     local n = o:GetName()
@@ -153,6 +154,45 @@ local function NameOf(o)
     return "(sans nom)"
   end
   return tostring(o)
+end
+
+local function Num(x)
+  if type(x) == "number" then
+    return tostring(math.floor(x * 1000 + 0.5) / 1000)
+  end
+  return tostring(x)
+end
+
+local function Color(r, g, b, a)
+  return Num(r) .. "," .. Num(g) .. "," .. Num(b) .. "," .. Num(a)
+end
+
+-- infos visuelles d'une texture / d'un texte
+local function VisInfo(o)
+  local parts = {}
+  if o.GetTexture then
+    local ok, t = pcall(o.GetTexture, o)
+    if ok then table.insert(parts, "texture=" .. tostring(t)) end
+    local ok2, r, g, b, a = pcall(o.GetVertexColor, o)
+    if ok2 and r then table.insert(parts, "teinte=" .. Color(r, g, b, a)) end
+    if o.GetDrawLayer then
+      local ok3, l = pcall(o.GetDrawLayer, o)
+      if ok3 then table.insert(parts, "couche=" .. tostring(l)) end
+    end
+  end
+  if o.GetFont then
+    local ok, path, size, flags = pcall(o.GetFont, o)
+    if ok then table.insert(parts, "police=" .. tostring(path) .. "," .. Num(size) .. "," .. tostring(flags)) end
+  end
+  if o.GetTextColor then
+    local ok, r, g, b, a = pcall(o.GetTextColor, o)
+    if ok and r then table.insert(parts, "couleurTexte=" .. Color(r, g, b, a)) end
+  end
+  if o.GetAlpha then
+    local ok, a = pcall(o.GetAlpha, o)
+    if ok then table.insert(parts, "alpha=" .. Num(a)) end
+  end
+  return table.concat(parts, " | ")
 end
 
 SLASH_ECFRAME1 = "/ecframe"
@@ -169,13 +209,16 @@ SlashCmdList["ECFRAME"] = function(msg)
   table.insert(out, name .. " : " .. fr:GetObjectType())
 
   if fr.GetWidth then
-    local line = "taille " .. tostring(fr:GetWidth()) .. " x " .. tostring(fr:GetHeight())
-    if fr.GetScale then line = line .. " | echelle " .. tostring(fr:GetScale()) end
+    local line = "taille " .. Num(fr:GetWidth()) .. " x " .. Num(fr:GetHeight())
+    if fr.GetScale then line = line .. " | echelle " .. Num(fr:GetScale()) end
     if fr.GetFrameStrata then line = line .. " | strate " .. tostring(fr:GetFrameStrata()) end
     if fr.GetFrameLevel then line = line .. " | niveau " .. tostring(fr:GetFrameLevel()) end
     if fr.IsShown then line = line .. " | visible " .. tostring(fr:IsShown()) end
     table.insert(out, line)
   end
+
+  local vis = VisInfo(fr)
+  if vis ~= "" then table.insert(out, vis) end
 
   if fr.GetParent then
     table.insert(out, "parent : " .. NameOf(fr:GetParent()))
@@ -186,13 +229,57 @@ SlashCmdList["ECFRAME"] = function(msg)
       local ok, point, relTo, relPoint, x, y = pcall(fr.GetPoint, fr, i)
       if not ok or point == nil then break end
       table.insert(out, "ancre " .. i .. " : " .. tostring(point) .. " sur " .. NameOf(relTo) ..
-        " (" .. tostring(relPoint) .. ") decalage " .. tostring(x) .. ", " .. tostring(y))
+        " (" .. tostring(relPoint) .. ") decalage " .. Num(x) .. ", " .. Num(y))
     end
   end
 
   if fr.GetText then
     local ok, t = pcall(fr.GetText, fr)
     if ok and t then table.insert(out, "texte : " .. tostring(t)) end
+  end
+
+  -- scripts presents
+  if fr.GetScript then
+    local names = { "OnClick", "OnEnter", "OnLeave", "OnShow", "OnHide", "OnMouseUp", "OnMouseDown", "OnLoad", "OnUpdate" }
+    local found = {}
+    for i = 1, table.getn(names) do
+      local ok, f = pcall(fr.GetScript, fr, names[i])
+      if ok and f then table.insert(found, names[i]) end
+    end
+    if table.getn(found) > 0 then
+      table.insert(out, "scripts : " .. table.concat(found, ", "))
+    end
+  end
+
+  -- textures d'un bouton
+  local texGetters = { "GetNormalTexture", "GetHighlightTexture", "GetPushedTexture", "GetDisabledTexture" }
+  for i = 1, table.getn(texGetters) do
+    local g = texGetters[i]
+    if fr[g] then
+      local ok, t = pcall(fr[g], fr)
+      if ok and t then
+        table.insert(out, g .. " : " .. NameOf(t) .. " " .. VisInfo(t))
+      end
+    end
+  end
+
+  -- champs Lua poses sur le cadre (key, id, ...)
+  local fields = {}
+  for k, v in pairs(fr) do
+    if k ~= 0 then
+      local d
+      if type(v) == "table" then d = NameOf(v)
+      elseif type(v) == "function" then d = "function"
+      else d = tostring(v) end
+      table.insert(fields, tostring(k) .. " = " .. d)
+    end
+  end
+  table.sort(fields)
+  if table.getn(fields) > 0 then
+    table.insert(out, "champs Lua :")
+    for i = 1, table.getn(fields) do
+      table.insert(out, "  " .. fields[i])
+    end
   end
 
   if fr.GetChildren then
@@ -216,6 +303,8 @@ SlashCmdList["ECFRAME"] = function(msg)
         if ok and t then extra = " = " .. tostring(t) end
       end
       table.insert(out, "  " .. NameOf(r) .. " (" .. r:GetObjectType() .. ")" .. extra)
+      local v = VisInfo(r)
+      if v ~= "" then table.insert(out, "      " .. v) end
     end
   end
 
