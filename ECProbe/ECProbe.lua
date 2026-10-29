@@ -2,6 +2,7 @@
 --   /ecprobe mot     -> liste les noms globaux contenant le mot
 --   /ecdump nom      -> affiche le contenu d'une table globale, ou le resultat
 --   /ecframe nom    -> decrit un cadre de l interface (taille, ancres, enfants)
+--   /ecsniff start|show|stop -> note les messages recus par l interface du jeu
 --                       d'une fonction AZS_Get*/AZS_Is* appelee sans argument
 -- Le resultat s'affiche dans une fenetre copiable (Ctrl+A puis Ctrl+C)
 -- et est sauvegarde dans ECProbeDB (ecrit a la fermeture du jeu).
@@ -309,4 +310,86 @@ SlashCmdList["ECFRAME"] = function(msg)
   end
 
   Show("frame_" .. name, out)
+end
+
+------------------------------------------------------------
+-- /ecsniff : note les messages recus par l'interface du jeu
+-- (cadre AZSApiFrame et fonction AZS_Parse). Lecture seule : on observe
+-- ce que le jeu envoie a son propre interface, on ne change rien.
+--   /ecsniff start   commence a noter (et remet les compteurs a zero)
+--   /ecsniff show    affiche ce qui a ete note
+--   /ecsniff stop    arrete
+------------------------------------------------------------
+local sniff = { on = false, keys = {}, n = 0 }
+local sniffHooked = false
+
+local function Cut(v, len)
+  return string.sub(tostring(v == nil and "" or v), 1, len)
+end
+
+local function Rec(src, ev, a1, a2, a3, a4)
+  if not sniff.on then return end
+  local key = src .. " | " .. Cut(ev, 40) .. " | " .. Cut(a1, 20)
+  local e = sniff.keys[key]
+  if not e then
+    if sniff.n >= 300 then return end
+    e = { count = 0 }
+    sniff.keys[key] = e
+    sniff.n = sniff.n + 1
+  end
+  e.count = e.count + 1
+  e.sample = Cut(a1, 160) .. " || " .. Cut(a2, 100) .. " || " .. Cut(a3, 60) .. " || " .. Cut(a4, 60)
+end
+
+local function InstallSniffer()
+  if sniffHooked then return end
+  sniffHooked = true
+
+  -- 1. messages recus par le cadre d'API du jeu
+  if type(AZSApiFrame) == "table" and AZSApiFrame.GetScript then
+    local old = AZSApiFrame:GetScript("OnEvent")
+    if old then
+      AZSApiFrame:SetScript("OnEvent", function()
+        pcall(Rec, "evenement", event, arg1, arg2, arg3, arg4)
+        old()
+      end)
+    end
+  end
+
+  -- 2. appels a la fonction qui decode les messages
+  if type(AZS_Parse) == "function" then
+    local origParse = AZS_Parse
+    AZS_Parse = function(a, b, c, d)
+      pcall(Rec, "parse", "-", a, b, c, d)
+      return origParse(a, b, c, d)
+    end
+  end
+end
+
+SLASH_ECSNIFF1 = "/ecsniff"
+SlashCmdList["ECSNIFF"] = function(msg)
+  msg = string.lower(msg or "")
+  if msg == "start" then
+    InstallSniffer()
+    sniff.keys, sniff.n = {}, 0
+    sniff.on = true
+    DEFAULT_CHAT_FRAME:AddMessage("ECProbe : écoute démarrée. Joue un peu, puis /ecsniff show")
+  elseif msg == "stop" then
+    sniff.on = false
+    DEFAULT_CHAT_FRAME:AddMessage("ECProbe : écoute arrêtée")
+  elseif msg == "show" then
+    local list = {}
+    for key, e in pairs(sniff.keys) do
+      table.insert(list, { key = key, count = e.count, sample = e.sample })
+    end
+    table.sort(list, function(a, b) return a.count > b.count end)
+    local out = { "Écoute : " .. table.getn(list) .. " type(s) de message, " .. (sniff.on and "en cours" or "arrêtée") }
+    for i = 1, table.getn(list) do
+      table.insert(out, list[i].key .. "   x" .. list[i].count)
+      table.insert(out, "     exemple : " .. tostring(list[i].sample))
+    end
+    Show("sniff", out)
+  else
+    DEFAULT_CHAT_FRAME:AddMessage("ECProbe : /ecsniff start, puis /ecsniff show (et /ecsniff stop)")
+  end
 end
